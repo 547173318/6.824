@@ -9,7 +9,6 @@ import "net/http"
 
 type Master struct {
 	// Your definitions here.
-	//
 
 }
 
