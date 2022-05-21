@@ -23,6 +23,8 @@ type GetTaskArgs struct {
 type GetTaskReply struct {
 	TaskType TaskType
 	TaskNum  int
+	FileName string
+	NReduce  int
 }
 
 type FinishedArgs struct {

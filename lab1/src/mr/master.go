@@ -11,11 +11,15 @@ import "os"
 import "net/rpc"
 import "net/http"
 
-var timeout = 10 * time.Second
+var timeout = 60 * time.Second
 
 type Master struct {
 	mu   sync.Mutex
-	cond sync.Cond
+	cond *sync.Cond
+
+	inputFiles []string
+	nFile      int
+	nReduce    int
 
 	mapFinished    []bool
 	reduceFinished []bool
@@ -31,29 +35,34 @@ func (m *Master) HandleGetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	defer func() {
+		fmt.Printf("HandleGetTask end --- type=%v, num=%v, filename=%v\n", reply.TaskType, reply.TaskNum, reply.FileName)
+	}()
+
 	// 1. check Map task first
 	for {
 		mapDone := true
 		for idx, done := range m.mapFinished {
 			// this task is issued or do nothing yet
 			if !done {
-				fmt.Println("hello1")
-				mapDone = false // There are still some tasks waiting to be completed
 				beginTime := m.mapIssued[idx]
 				// issue task if did not issue or timeout
 				if beginTime.IsZero() || time.Now().Sub(beginTime) > timeout {
-					fmt.Println("hello2")
 					reply.TaskType = Map
 					reply.TaskNum = idx
-					m.mu.Unlock()
-					fmt.Println("HandleGetTask end --- type=%v, num=%v", reply.TaskType, reply.TaskNum)
+					reply.FileName = m.inputFiles[idx]
+					reply.NReduce = m.nReduce
+					m.mapIssued[idx] = time.Now()
 					return nil
+				} else {
+					mapDone = false // There are still some tasks waiting to be completed
 				}
 			}
 		}
 		// There are still some tasks waiting to be completed.
 		// wait
 		if !mapDone {
+			fmt.Println("waiting...")
 			m.cond.Wait()
 		} else {
 			break
@@ -65,21 +74,22 @@ func (m *Master) HandleGetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		for idx, done := range m.reduceFinished {
 			// this task is issued or do nothing yet
 			if !done {
-				reduceDone = false // There are still some tasks waiting to be completed
 				beginTime := m.reduceIssued[idx]
 				// issue task if did not issue or timeout
 				if beginTime.IsZero() || time.Now().Sub(beginTime) > timeout {
 					reply.TaskType = Reduce
 					reply.TaskNum = idx
-					m.mu.Unlock()
-					fmt.Println("HandleGetTask end --- type=%v, num=%v", reply.TaskType, reply.TaskNum)
+					m.reduceIssued[idx] = time.Now()
 					return nil
+				} else {
+					reduceDone = false // There are still some tasks waiting to be completed
 				}
 			}
 		}
 		// There are still some tasks waiting to be completed.
 		// wait
 		if !reduceDone {
+			fmt.Println("waiting...")
 			m.cond.Wait()
 		} else {
 			break
@@ -88,7 +98,6 @@ func (m *Master) HandleGetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	// 3. all task are completed
 	reply.TaskType = 3
 	m.isDone = true
-	fmt.Println("HandleGetTask end --- type=%v, num=%v", reply.TaskType, reply.TaskNum)
 	return nil
 }
 
@@ -104,7 +113,7 @@ func (m *Master) HandleFinished(args *FinishedArgs, reply *FinishedReply) error 
 		m.reduceFinished[args.TaskNum] = true
 	}
 	m.cond.Broadcast()
-	fmt.Println("HandleFinished end --- type=%v, num=%v", args.TaskType, args.TaskNum)
+	fmt.Printf("HandleFinished end --- type=%v, num=%v\n", args.TaskType, args.TaskNum)
 	return nil
 }
 
@@ -138,26 +147,22 @@ func (m *Master) Done() bool {
 // main/mrmaster.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeMaster(files []string, nReduce int) *Master {
+
 	m := Master{}
-	// todo
-	// read each input file,
-	// pass it to Map,
-	// accumulate the intermediate Map output.
-	//intermediate := []KeyValue{}
-	//for _, filename := range os.Args[2:] {
-	//	file, err := os.Open(filename)
-	//	if err != nil {
-	//		log.Fatalf("cannot open %v", filename)
-	//	}
-	//	content, err := ioutil.ReadAll(file)
-	//	if err != nil {
-	//		log.Fatalf("cannot read %v", filename)
-	//	}
-	//	file.Close()
-	//	kva := mapf(filename, string(content))
-	//	intermediate = append(intermediate, kva...)
-	//}
+	m.nFile = len(files)
+	m.nReduce = nReduce
+	//m.nFile = 2
+	//m.nReduce = 2
+
+	// init
+	m.inputFiles = files
+	m.mapFinished = make([]bool, m.nFile)
+	m.mapIssued = make([]time.Time, m.nFile)
+	m.reduceFinished = make([]bool, m.nReduce)
+	m.reduceIssued = make([]time.Time, m.nReduce)
+	m.cond = sync.NewCond(&m.mu)
 
 	m.server()
+	fmt.Printf("nFile = %v, nReduce = %v\n", m.nFile, m.nReduce)
 	return &m
 }
